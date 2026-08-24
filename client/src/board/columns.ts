@@ -1,4 +1,4 @@
-import type { LineDto, PanelDto } from '@realtimeapp/shared';
+import type { LineDto, PanelDto, PendingMove } from '@realtimeapp/shared';
 
 export type Columns = Record<string, string[]>;
 
@@ -25,4 +25,13 @@ export function buildColumns(lines: LineDto[], panels: PanelDto[]): Columns {
 
 export function findContainer(columns: Columns, panelId: string): string | undefined {
   return Object.keys(columns).find((lineId) => columns[lineId].includes(panelId));
+}
+
+// 「操作中」の未確定な移動結果を、確定前のプレビューとしてcolumnsへ反映する
+export function applyPendingMove(columns: Columns, move: PendingMove): Columns {
+  return {
+    ...columns,
+    [move.fromLineId]: move.fromLineOrder,
+    [move.toLineId]: move.toLineOrder,
+  };
 }

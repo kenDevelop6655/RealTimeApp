@@ -72,9 +72,19 @@ export interface AwarenessUser {
   color: string;
 }
 
+// ドロップ後・確定前の「操作中」状態。Y.Docは変更せずAwarenessのみで共有する
+export interface PendingMove {
+  panelId: string;
+  fromLineId: string;
+  toLineId: string;
+  fromLineOrder: string[];
+  toLineOrder: string[];
+}
+
 export interface AwarenessState {
   user: AwarenessUser;
   draggingPanelId?: string | null;
+  pendingMoves?: PendingMove[];
 }
 
 // 単一の共有スペース(ボード概念なし)を表す固定のYjsドキュメント名

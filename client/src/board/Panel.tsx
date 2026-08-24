@@ -5,12 +5,14 @@ import type { PanelDto, AwarenessUser } from '@realtimeapp/shared';
 interface Props {
   panel: PanelDto;
   editingUser?: AwarenessUser;
+  disabled?: boolean;
   onDelete: (panel: PanelDto) => void;
 }
 
-export function Panel({ panel, editingUser, onDelete }: Props) {
+export function Panel({ panel, editingUser, disabled, onDelete }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: panel.id,
+    disabled,
   });
 
   const style = {
@@ -18,10 +20,17 @@ export function Panel({ panel, editingUser, onDelete }: Props) {
     transition,
     opacity: isDragging ? 0.4 : 1,
     borderColor: editingUser ? editingUser.color : undefined,
+    cursor: disabled ? 'not-allowed' : undefined,
   };
 
   return (
-    <div ref={setNodeRef} style={style} className="panel" {...attributes} {...listeners}>
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="panel"
+      {...attributes}
+      {...(disabled ? {} : listeners)}
+    >
       <span className="panel-name">{panel.name}</span>
       {editingUser && (
         <span className="panel-editing-badge" style={{ backgroundColor: editingUser.color }}>
@@ -33,6 +42,7 @@ export function Panel({ panel, editingUser, onDelete }: Props) {
         className="panel-delete"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={() => onDelete(panel)}
+        disabled={disabled}
       >
         ×
       </button>

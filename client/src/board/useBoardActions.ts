@@ -9,9 +9,25 @@ interface Params {
   ydoc: Y.Doc;
   token: string | null;
   panels: PanelDto[];
+  lines: LineDto[];
 }
 
-export function useBoardActions({ ydoc, token, panels }: Params) {
+export function useBoardActions({ ydoc, token, panels, lines }: Params) {
+  const addLine = useCallback(
+    (name: string) => {
+      const lastOrder = lines.length > 0 ? lines[lines.length - 1].order : null;
+      const order = computeOrder(lastOrder, null);
+      const id = crypto.randomUUID();
+
+      ydoc.transact(() => {
+        ydoc.getMap('lines').set(id, { id, name, order });
+      });
+
+      return id;
+    },
+    [ydoc, lines]
+  );
+
   const addPanel = useCallback(
     async (line: LineDto, name: string) => {
       if (!token) return;
@@ -107,5 +123,5 @@ export function useBoardActions({ ydoc, token, panels }: Params) {
     [ydoc, token, panels]
   );
 
-  return { addPanel, removePanel, commitMove };
+  return { addLine, addPanel, removePanel, commitMove };
 }

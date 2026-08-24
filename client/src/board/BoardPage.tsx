@@ -1,42 +1,137 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  closestCorners,
+  closestCenter,
+  getFirstCollision,
+  pointerWithin,
+  rectIntersection,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragCancelEvent,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
-import type { PanelDto } from '@realtimeapp/shared';
+import type { PanelDto, PendingMove } from '@realtimeapp/shared';
 import { useAuth } from '../auth/AuthContext';
 import { useBoardDoc } from './useBoardDoc';
-import { useDraggingUsers } from './useAwareness';
+import { useDraggingUsers, usePendingMoves } from './useAwareness';
 import { useBoardActions } from './useBoardActions';
-import { buildColumns, findContainer, type Columns } from './columns';
+import { buildColumns, findContainer, applyPendingMove, type Columns } from './columns';
 import { moveAcrossContainers } from './dragResolve';
 import { colorForUser } from './color';
 import { Line } from './Line';
 import { PanelOverlay } from './PanelOverlay';
 
+const PAGE_SIZE = 10;
+
 export function BoardPage() {
   const { token, user, logout } = useAuth();
   const { ydoc, provider, connected, lines, panels } = useBoardDoc(token);
   const draggingUsers = useDraggingUsers(provider);
-  const { addPanel, removePanel, commitMove } = useBoardActions({ ydoc, token, panels });
+  const pendingMoves = usePendingMoves(provider);
+  const { addLine, addPanel, removePanel, commitMove } = useBoardActions({ ydoc, token, panels, lines });
 
   const [dragColumns, setDragColumns] = useState<Columns | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [myPendingMoves, setMyPendingMoves] = useState<PendingMove[]>([]);
+  const [page, setPage] = useState(0);
+  const [newLineName, setNewLineName] = useState('');
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const panelsById = useMemo(() => new Map(panels.map((p) => [p.id, p])), [panels]);
   const yjsColumns = useMemo(() => buildColumns(lines, panels), [lines, panels]);
-  const columns = dragColumns ?? yjsColumns;
+
+  // 自分・他ユーザーの「操作中」(ドロップ後・確定前)の移動結果をプレビューとして重ねる
+  const previewColumns = useMemo(() => {
+    let cols = yjsColumns;
+    for (const move of myPendingMoves) cols = applyPendingMove(cols, move);
+    for (const entry of pendingMoves) {
+      if (entry.user.id === user?.id) continue;
+      cols = applyPendingMove(cols, entry.move);
+    }
+    return cols;
+  }, [yjsColumns, myPendingMoves, pendingMoves, user]);
+
+  const columns = dragColumns ?? previewColumns;
+
+  // closestCornersだけだと、パネルが少ない/空のラインは判定領域が狭くなり、
+  // ラインの右寄り(既存パネルに近い側)でないとdragOverが発火しないことがあるため、
+  // ポインタが実際に重なっている領域を優先するdnd-kit公式のmulti-containers例の判定方式を採用する
+  const lastOverId = useRef<string | null>(null);
+
+  const collisionDetectionStrategy: CollisionDetection = useCallback(
+    (args) => {
+      const pointerIntersections = pointerWithin(args);
+      const intersections = pointerIntersections.length > 0 ? pointerIntersections : rectIntersection(args);
+      let overId = getFirstCollision(intersections, 'id') as string | null;
+
+      if (overId != null) {
+        const containerItems = columns[overId];
+        if (containerItems && containerItems.length > 0) {
+          const closest = closestCenter({
+            ...args,
+            droppableContainers: args.droppableContainers.filter(
+              (container) => container.id !== overId && containerItems.includes(container.id as string)
+            ),
+          });
+          overId = (closest[0]?.id as string | undefined) ?? overId;
+        }
+        lastOverId.current = overId;
+        return [{ id: overId }];
+      }
+
+      return lastOverId.current ? [{ id: lastOverId.current }] : [];
+    },
+    [columns]
+  );
+
+  // 他ユーザーが「操作中」(確定前)のラインID一覧。これらのラインだけをロックし、他のラインは通常通り操作できる。
+  // 自分自身の未確定操作が絡むラインはロック対象に含めない(自分の操作中に自分の操作が不可にならないようにするため)
+  const lockedLineIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of pendingMoves) {
+      if (entry.user.id === user?.id) continue;
+      set.add(entry.move.fromLineId);
+      set.add(entry.move.toLineId);
+    }
+    return set;
+  }, [pendingMoves, user]);
+
+  // lineId -> 操作中バッジ情報(自分の分を優先、なければ他ユーザーの分)
+  const operatingByLine = useMemo(() => {
+    const map = new Map<string, { userName: string; color: string; mine: boolean }>();
+    for (const entry of pendingMoves) {
+      if (entry.user.id === user?.id) continue;
+      const badge = { userName: entry.user.name, color: entry.user.color, mine: false };
+      map.set(entry.move.fromLineId, badge);
+      map.set(entry.move.toLineId, badge);
+    }
+    if (user) {
+      const badge = { userName: user.name, color: colorForUser(user.id), mine: true };
+      for (const move of myPendingMoves) {
+        map.set(move.fromLineId, badge);
+        map.set(move.toLineId, badge);
+      }
+    }
+    return map;
+  }, [pendingMoves, myPendingMoves, user]);
+
+  const totalPages = Math.max(1, Math.ceil(lines.length / PAGE_SIZE));
+
+  useEffect(() => {
+    if (page > totalPages - 1) setPage(totalPages - 1);
+  }, [page, totalPages]);
+
+  const pagedLines = useMemo(
+    () => lines.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [lines, page]
+  );
 
   useEffect(() => {
     if (!provider || !user) return;
@@ -49,8 +144,13 @@ export function BoardPage() {
 
   function handleDragStart(event: DragStartEvent) {
     const id = event.active.id as string;
+    const sourceLineId = findContainer(previewColumns, id);
+    if (sourceLineId && lockedLineIds.has(sourceLineId)) return;
     setActiveId(id);
-    setDragColumns(yjsColumns);
+    // 確定済みのyjsColumnsではなく、自分・他ユーザーの未確定操作を反映したpreviewColumnsを起点にする。
+    // yjsColumnsを起点にすると、ドラッグ中は他の未確定操作のプレビューが一時的に消え、
+    // ドラッグ終了時に突然復元されるように見えてしまう
+    setDragColumns(previewColumns);
     provider?.awareness?.setLocalStateField('draggingPanelId', id);
   }
 
@@ -60,10 +160,12 @@ export function BoardPage() {
     setDragColumns((prev) => (prev ? moveAcrossContainers(prev, active.id as string, over.id as string) : prev));
   }
 
-  async function handleDragEnd(event: DragEndEvent) {
+  function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     const activeIdValue = active.id as string;
     const base = dragColumns ?? yjsColumns;
+
+    provider?.awareness?.setLocalStateField('draggingPanelId', null);
 
     if (!over) {
       resetDragState();
@@ -90,17 +192,63 @@ export function BoardPage() {
     }
 
     resetDragState();
-    await commitMove(activeIdValue, overContainer, finalColumns);
+
+    // 移動元・移動先は「ドラッグ開始前(確定済み)の状態」を基準にする
+    const fromLineId = findContainer(yjsColumns, activeIdValue);
+    const toLineId = overContainer;
+    if (!fromLineId) return;
+
+    const fromLineOrder = finalColumns[fromLineId] ?? [];
+    const toLineOrder = finalColumns[toLineId] ?? [];
+    const unchanged =
+      fromLineId === toLineId &&
+      toLineOrder.indexOf(activeIdValue) === (yjsColumns[fromLineId] ?? []).indexOf(activeIdValue);
+
+    // 確定済み(ドラッグ開始前)の状態を基準に、この操作を既存の保留操作と置き換える(同一パネルにつき常に1件のみ保持)。
+    // これにより、確定するまで何度動かしても表示される確認メッセージは1つのままで、履歴には最終的な移動結果だけが記録される
+    setMyPendingMoves((prev) => {
+      const withoutThisPanel = prev.filter((m) => m.panelId !== activeIdValue);
+      const next = unchanged
+        ? withoutThisPanel
+        : [...withoutThisPanel, { panelId: activeIdValue, fromLineId, toLineId, fromLineOrder, toLineOrder }];
+      provider?.awareness?.setLocalStateField('pendingMoves', next);
+      return next;
+    });
   }
 
   function handleDragCancel(_event: DragCancelEvent) {
+    provider?.awareness?.setLocalStateField('draggingPanelId', null);
     resetDragState();
   }
 
   function resetDragState() {
-    provider?.awareness?.setLocalStateField('draggingPanelId', null);
     setDragColumns(null);
     setActiveId(null);
+    lastOverId.current = null;
+  }
+
+  // 何ライン・何件の未確定操作を抱えていても、確定モーダルは常に1つだけ表示し、
+  // 確定を押した時点で未確定操作をすべてまとめて確定する
+  async function handleConfirmAll() {
+    const moves = myPendingMoves;
+    await Promise.all(moves.map((move) => commitMove(move.panelId, move.toLineId, applyPendingMove(yjsColumns, move))));
+    setMyPendingMoves([]);
+    provider?.awareness?.setLocalStateField('pendingMoves', []);
+  }
+
+  function handleCancelAll() {
+    setMyPendingMoves([]);
+    provider?.awareness?.setLocalStateField('pendingMoves', []);
+  }
+
+  function handleAddLine(e: FormEvent) {
+    e.preventDefault();
+    const name = newLineName.trim();
+    if (!name) return;
+    addLine(name);
+    setNewLineName('');
+    // 新規ラインは末尾に追加されるため、最終ページへ移動して表示する
+    setPage(Math.ceil((lines.length + 1) / PAGE_SIZE) - 1);
   }
 
   const activePanel: PanelDto | undefined = activeId ? panelsById.get(activeId) : undefined;
@@ -120,22 +268,49 @@ export function BoardPage() {
         </div>
       </header>
 
+      <div className="pagination">
+        <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+          前のページ
+        </button>
+        <span>
+          ページ {page + 1} / {totalPages}
+        </span>
+        <button
+          type="button"
+          onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+          disabled={page >= totalPages - 1}
+        >
+          次のページ
+        </button>
+        <form className="board-add-line-form" onSubmit={handleAddLine}>
+          <input
+            type="text"
+            placeholder="ラインを追加"
+            value={newLineName}
+            onChange={(e) => setNewLineName(e.target.value)}
+          />
+          <button type="submit">ライン追加</button>
+        </form>
+      </div>
+
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={collisionDetectionStrategy}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
         onDragCancel={handleDragCancel}
       >
         <div className="lines">
-          {lines.map((line) => (
+          {pagedLines.map((line) => (
             <Line
               key={line.id}
               line={line}
               panelIds={columns[line.id] ?? []}
               panelsById={panelsById}
               draggingUsers={draggingUsers}
+              operating={operatingByLine.get(line.id)}
+              dragLocked={lockedLineIds.has(line.id)}
               onDelete={removePanel}
               onAdd={addPanel}
             />
@@ -144,6 +319,20 @@ export function BoardPage() {
 
         <DragOverlay>{activePanel ? <PanelOverlay panel={activePanel} /> : null}</DragOverlay>
       </DndContext>
+
+      {myPendingMoves.length > 0 && (
+        <div className="confirm-bar-stack">
+          <div className="confirm-bar">
+            <span>操作を確定しますか?</span>
+            <button type="button" className="confirm-bar-confirm" onClick={handleConfirmAll}>
+              確定
+            </button>
+            <button type="button" className="confirm-bar-cancel" onClick={handleCancelAll}>
+              キャンセル
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

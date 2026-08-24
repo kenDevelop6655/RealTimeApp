@@ -13,7 +13,8 @@ export function moveAcrossContainers(columns: Columns, activeId: string, overId:
   const activeItems = columns[activeContainer];
   const overItems = columns[overContainer];
   const overIndex = overItems.indexOf(overId);
-  const newIndex = overId in columns ? overItems.length : overIndex >= 0 ? overIndex : overItems.length;
+  // overIdがライン自体(空きスペースへのドロップ)の場合は先頭に挿入する
+  const newIndex = overId in columns ? 0 : overIndex >= 0 ? overIndex : overItems.length;
 
   return {
     ...columns,
