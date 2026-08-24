@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  avatarUrl    String?
+  createdAt    DateTime  @default(now())
+  histories    History[]
+}
+
+// 単一の共有スペース(Y.Doc)のバイナリスナップショット。行は常に1件のみ運用する。
+model DocSnapshot {
+  id        String   @id @default("main")
+  ydocState Bytes
+  updatedAt DateTime @updatedAt
+}
+
+model History {
+  id         String     @id @default(uuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  panelId    String
+  panelName  String
+  action     String
+  fromLineId String?
+  toLineId   String?
+  fromIndex  Int?
+  toIndex    Int?
+  createdAt  DateTime   @default(now())
+
+  @@index([createdAt])
+  @@index([panelId])
+}

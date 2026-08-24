@@ -1,0 +1,15 @@
+{
+  "name": "realtimeapp",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace=server",
+    "dev:client": "npm run dev --workspace=client",
+    "typecheck:server": "npm run typecheck --workspace=server",
+    "build:client": "npm run build --workspace=client"
+  }
+}
