@@ -86,13 +86,21 @@ export function BoardPage() {
         return [{ id: overId }];
       }
 
-      return lastOverId.current ? [{ id: lastOverId.current }] : [];
+      // 直前まで有効だったコンテナが、その後ロックされる等でdroppable対象から外れている場合、
+      // 古いIDにフォールバックしない(ポインタが動かないままロックされたラインの上に留まっても
+      // ドロップ可能と誤判定してしまうため)
+      if (lastOverId.current && args.droppableContainers.some((container) => container.id === lastOverId.current)) {
+        return [{ id: lastOverId.current }];
+      }
+      lastOverId.current = null;
+      return [];
     },
     [columns]
   );
 
-  // 他ユーザーが「操作中」(確定前)のラインID一覧。これらのラインだけをロックし、他のラインは通常通り操作できる。
-  // 自分自身の未確定操作が絡むラインはロック対象に含めない(自分の操作中に自分の操作が不可にならないようにするため)
+  // 他ユーザーが「編集中」(ドラッグ中)または「操作中」(ドロップ後・確定前)のラインID一覧。
+  // これらのラインだけをロックし、他のラインは通常通り操作できる。
+  // 自分自身が関わるラインはロック対象に含めない(自分の編集中・操作中に自分の操作が不可にならないようにするため)
   const lockedLineIds = useMemo(() => {
     const set = new Set<string>();
     for (const entry of pendingMoves) {
@@ -100,8 +108,13 @@ export function BoardPage() {
       set.add(entry.move.fromLineId);
       set.add(entry.move.toLineId);
     }
+    draggingUsers.forEach((draggingUser, panelId) => {
+      if (draggingUser.id === user?.id) return;
+      const lineId = findContainer(previewColumns, panelId);
+      if (lineId) set.add(lineId);
+    });
     return set;
-  }, [pendingMoves, user]);
+  }, [pendingMoves, draggingUsers, previewColumns, user]);
 
   // lineId -> 操作中バッジ情報(自分の分を優先、なければ他ユーザーの分)
   const operatingByLine = useMemo(() => {
@@ -198,6 +211,9 @@ export function BoardPage() {
     const toLineId = overContainer;
     if (!fromLineId) return;
 
+    // dnd-kit側のdisabled判定をすり抜けて他ユーザーが編集中/操作中のラインへドロップしようとした場合の保険
+    if (lockedLineIds.has(fromLineId) || lockedLineIds.has(toLineId)) return;
+
     const fromLineOrder = finalColumns[fromLineId] ?? [];
     const toLineOrder = finalColumns[toLineId] ?? [];
     const unchanged =
@@ -208,9 +224,17 @@ export function BoardPage() {
     // これにより、確定するまで何度動かしても表示される確認メッセージは1つのままで、履歴には最終的な移動結果だけが記録される
     setMyPendingMoves((prev) => {
       const withoutThisPanel = prev.filter((m) => m.panelId !== activeIdValue);
+      // fromLineIdは常に確定済みの元のラインを指すため、このパネルが他の未確定操作の
+      // fromLineOrder/toLineOrderに(直前のプレビュー上の位置として)残っている場合がある。
+      // 反映し直さないと、そのラインにパネルが残存表示されたまま複製されてしまう
+      const cleaned = withoutThisPanel.map((m) => ({
+        ...m,
+        fromLineOrder: m.fromLineOrder.filter((id) => id !== activeIdValue),
+        toLineOrder: m.toLineOrder.filter((id) => id !== activeIdValue),
+      }));
       const next = unchanged
-        ? withoutThisPanel
-        : [...withoutThisPanel, { panelId: activeIdValue, fromLineId, toLineId, fromLineOrder, toLineOrder }];
+        ? cleaned
+        : [...cleaned, { panelId: activeIdValue, fromLineId, toLineId, fromLineOrder, toLineOrder }];
       provider?.awareness?.setLocalStateField('pendingMoves', next);
       return next;
     });
