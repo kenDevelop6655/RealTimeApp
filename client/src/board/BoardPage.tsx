@@ -16,12 +16,13 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
-import type { PanelDto, PendingMove } from '@realtimeapp/shared';
+import type { LineDto, PanelDto, PendingAction, PendingMoveAction } from '@realtimeapp/shared';
+import { createHistoryConfirmation } from '../api/history';
 import { useAuth } from '../auth/AuthContext';
 import { useBoardDoc } from './useBoardDoc';
-import { useDraggingUsers, usePendingMoves } from './useAwareness';
+import { useDraggingUsers, usePendingActions } from './useAwareness';
 import { useBoardActions } from './useBoardActions';
-import { buildColumns, findContainer, applyPendingMove, type Columns } from './columns';
+import { buildColumns, findContainer, applyPendingAction, pendingActionLineIds, type Columns } from './columns';
 import { moveAcrossContainers } from './dragResolve';
 import { colorForUser } from './color';
 import { Line } from './Line';
@@ -33,30 +34,62 @@ export function BoardPage() {
   const { token, user, logout } = useAuth();
   const { ydoc, provider, connected, lines, panels } = useBoardDoc(token);
   const draggingUsers = useDraggingUsers(provider);
-  const pendingMoves = usePendingMoves(provider);
-  const { addLine, addPanel, removePanel, commitMove } = useBoardActions({ ydoc, token, panels, lines });
+  const pendingActions = usePendingActions(provider);
+  const { addLine, createPendingAdd, createPendingRemove, confirmActions } = useBoardActions({
+    ydoc,
+    token,
+    panels,
+    lines,
+  });
 
   const [dragColumns, setDragColumns] = useState<Columns | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [myPendingMoves, setMyPendingMoves] = useState<PendingMove[]>([]);
+  const [myPendingActions, setMyPendingActions] = useState<PendingAction[]>([]);
   const [page, setPage] = useState(0);
   const [newLineName, setNewLineName] = useState('');
+  const [confirmComment, setConfirmComment] = useState('');
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const panelsById = useMemo(() => new Map(panels.map((p) => [p.id, p])), [panels]);
   const yjsColumns = useMemo(() => buildColumns(lines, panels), [lines, panels]);
 
-  // 自分・他ユーザーの「操作中」(ドロップ後・確定前)の移動結果をプレビューとして重ねる
+  // 自分・他ユーザーの「操作中」(確定前)の移動/追加/削除結果をプレビューとして重ねる
   const previewColumns = useMemo(() => {
     let cols = yjsColumns;
-    for (const move of myPendingMoves) cols = applyPendingMove(cols, move);
-    for (const entry of pendingMoves) {
+    for (const action of myPendingActions) cols = applyPendingAction(cols, action);
+    for (const entry of pendingActions) {
       if (entry.user.id === user?.id) continue;
-      cols = applyPendingMove(cols, entry.move);
+      cols = applyPendingAction(cols, entry.action);
     }
     return cols;
-  }, [yjsColumns, myPendingMoves, pendingMoves, user]);
+  }, [yjsColumns, myPendingActions, pendingActions, user]);
+
+  // 「追加」の未確定操作はY.Docにまだ存在しないパネルなので、プレビュー表示用に仮のPanelDtoを補う
+  const previewPanelsById = useMemo(() => {
+    const map = new Map(panelsById);
+    const addPreview = (action: PendingAction) => {
+      if (action.kind !== 'add') return;
+      map.set(action.panelId, { id: action.panelId, name: action.panelName, lineId: action.lineId, order: 0, createdAt: 0 });
+    };
+    for (const action of myPendingActions) addPreview(action);
+    for (const entry of pendingActions) {
+      if (entry.user.id === user?.id) continue;
+      addPreview(entry.action);
+    }
+    return map;
+  }, [panelsById, myPendingActions, pendingActions, user]);
+
+  // 確定前の「追加」プレビューパネルのID一覧。まだY.Docに存在しないためドラッグ・削除操作を無効化する
+  const pendingAddPanelIds = useMemo(() => {
+    const set = new Set<string>();
+    const collect = (action: PendingAction) => {
+      if (action.kind === 'add') set.add(action.panelId);
+    };
+    for (const action of myPendingActions) collect(action);
+    for (const entry of pendingActions) collect(entry.action);
+    return set;
+  }, [myPendingActions, pendingActions]);
 
   const columns = dragColumns ?? previewColumns;
 
@@ -103,10 +136,9 @@ export function BoardPage() {
   // 自分自身が関わるラインはロック対象に含めない(自分の編集中・操作中に自分の操作が不可にならないようにするため)
   const lockedLineIds = useMemo(() => {
     const set = new Set<string>();
-    for (const entry of pendingMoves) {
+    for (const entry of pendingActions) {
       if (entry.user.id === user?.id) continue;
-      set.add(entry.move.fromLineId);
-      set.add(entry.move.toLineId);
+      for (const lineId of pendingActionLineIds(entry.action)) set.add(lineId);
     }
     draggingUsers.forEach((draggingUser, panelId) => {
       if (draggingUser.id === user?.id) return;
@@ -114,26 +146,24 @@ export function BoardPage() {
       if (lineId) set.add(lineId);
     });
     return set;
-  }, [pendingMoves, draggingUsers, previewColumns, user]);
+  }, [pendingActions, draggingUsers, previewColumns, user]);
 
   // lineId -> 操作中バッジ情報(自分の分を優先、なければ他ユーザーの分)
   const operatingByLine = useMemo(() => {
     const map = new Map<string, { userName: string; color: string; mine: boolean }>();
-    for (const entry of pendingMoves) {
+    for (const entry of pendingActions) {
       if (entry.user.id === user?.id) continue;
       const badge = { userName: entry.user.name, color: entry.user.color, mine: false };
-      map.set(entry.move.fromLineId, badge);
-      map.set(entry.move.toLineId, badge);
+      for (const lineId of pendingActionLineIds(entry.action)) map.set(lineId, badge);
     }
     if (user) {
       const badge = { userName: user.name, color: colorForUser(user.id), mine: true };
-      for (const move of myPendingMoves) {
-        map.set(move.fromLineId, badge);
-        map.set(move.toLineId, badge);
+      for (const action of myPendingActions) {
+        for (const lineId of pendingActionLineIds(action)) map.set(lineId, badge);
       }
     }
     return map;
-  }, [pendingMoves, myPendingMoves, user]);
+  }, [pendingActions, myPendingActions, user]);
 
   const totalPages = Math.max(1, Math.ceil(lines.length / PAGE_SIZE));
 
@@ -222,20 +252,23 @@ export function BoardPage() {
 
     // 確定済み(ドラッグ開始前)の状態を基準に、この操作を既存の保留操作と置き換える(同一パネルにつき常に1件のみ保持)。
     // これにより、確定するまで何度動かしても表示される確認メッセージは1つのままで、履歴には最終的な移動結果だけが記録される
-    setMyPendingMoves((prev) => {
-      const withoutThisPanel = prev.filter((m) => m.panelId !== activeIdValue);
-      // fromLineIdは常に確定済みの元のラインを指すため、このパネルが他の未確定操作の
+    setMyPendingActions((prev) => {
+      const withoutThisPanel = prev.filter((a) => a.panelId !== activeIdValue);
+      // fromLineIdは常に確定済みの元のラインを指すため、このパネルが他の未確定move操作の
       // fromLineOrder/toLineOrderに(直前のプレビュー上の位置として)残っている場合がある。
       // 反映し直さないと、そのラインにパネルが残存表示されたまま複製されてしまう
-      const cleaned = withoutThisPanel.map((m) => ({
-        ...m,
-        fromLineOrder: m.fromLineOrder.filter((id) => id !== activeIdValue),
-        toLineOrder: m.toLineOrder.filter((id) => id !== activeIdValue),
-      }));
-      const next = unchanged
-        ? cleaned
-        : [...cleaned, { panelId: activeIdValue, fromLineId, toLineId, fromLineOrder, toLineOrder }];
-      provider?.awareness?.setLocalStateField('pendingMoves', next);
+      const cleaned = withoutThisPanel.map((a) =>
+        a.kind === 'move'
+          ? {
+              ...a,
+              fromLineOrder: a.fromLineOrder.filter((id) => id !== activeIdValue),
+              toLineOrder: a.toLineOrder.filter((id) => id !== activeIdValue),
+            }
+          : a
+      );
+      const moveAction: PendingMoveAction = { kind: 'move', panelId: activeIdValue, fromLineId, toLineId, fromLineOrder, toLineOrder };
+      const next = unchanged ? cleaned : [...cleaned, moveAction];
+      provider?.awareness?.setLocalStateField('pendingActions', next);
       return next;
     });
   }
@@ -251,18 +284,46 @@ export function BoardPage() {
     lastOverId.current = null;
   }
 
-  // 何ライン・何件の未確定操作を抱えていても、確定モーダルは常に1つだけ表示し、
+  // 何ライン・何件の未確定操作(移動/追加/削除)を抱えていても、確定モーダルは常に1つだけ表示し、
   // 確定を押した時点で未確定操作をすべてまとめて確定する
   async function handleConfirmAll() {
-    const moves = myPendingMoves;
-    await Promise.all(moves.map((move) => commitMove(move.panelId, move.toLineId, applyPendingMove(yjsColumns, move))));
-    setMyPendingMoves([]);
-    provider?.awareness?.setLocalStateField('pendingMoves', []);
+    const actions = myPendingActions;
+    if (actions.length === 0) return;
+    if (!token) return;
+
+    // 複数の操作(追加/削除/移動)をまとめて確定する場合、どの確定でHistoryが作られたか後から追跡できるよう、
+    // 先に1件のHistoryConfirmationを作成し、そのIDを各Historyに紐づける
+    const confirmation = await createHistoryConfirmation(token, { comment: confirmComment.trim() || null });
+    await confirmActions(actions, confirmation.id);
+    setMyPendingActions([]);
+    setConfirmComment('');
+    provider?.awareness?.setLocalStateField('pendingActions', []);
   }
 
   function handleCancelAll() {
-    setMyPendingMoves([]);
-    provider?.awareness?.setLocalStateField('pendingMoves', []);
+    setMyPendingActions([]);
+    setConfirmComment('');
+    provider?.awareness?.setLocalStateField('pendingActions', []);
+  }
+
+  // 追加・削除もmoveと同じ「確定バー」でまとめて確定する対象として、その場ではY.Docを変更せず未確定操作を積む
+  function handleAddPanel(line: LineDto, name: string) {
+    const action = createPendingAdd(line, name);
+    setMyPendingActions((prev) => {
+      const next = [...prev, action];
+      provider?.awareness?.setLocalStateField('pendingActions', next);
+      return next;
+    });
+  }
+
+  function handleRemovePanel(panel: PanelDto) {
+    const action = createPendingRemove(panel);
+    setMyPendingActions((prev) => {
+      // 同じパネルに未確定のmove等が既にある場合は、削除で置き換える(同一パネルにつき常に1件のみ保持)
+      const next = [...prev.filter((a) => a.panelId !== panel.id), action];
+      provider?.awareness?.setLocalStateField('pendingActions', next);
+      return next;
+    });
   }
 
   function handleAddLine(e: FormEvent) {
@@ -275,7 +336,7 @@ export function BoardPage() {
     setPage(Math.ceil((lines.length + 1) / PAGE_SIZE) - 1);
   }
 
-  const activePanel: PanelDto | undefined = activeId ? panelsById.get(activeId) : undefined;
+  const activePanel: PanelDto | undefined = activeId ? previewPanelsById.get(activeId) : undefined;
 
   return (
     <div className="board-page">
@@ -331,12 +392,13 @@ export function BoardPage() {
               key={line.id}
               line={line}
               panelIds={columns[line.id] ?? []}
-              panelsById={panelsById}
+              panelsById={previewPanelsById}
               draggingUsers={draggingUsers}
               operating={operatingByLine.get(line.id)}
               dragLocked={lockedLineIds.has(line.id)}
-              onDelete={removePanel}
-              onAdd={addPanel}
+              pendingPanelIds={pendingAddPanelIds}
+              onDelete={handleRemovePanel}
+              onAdd={handleAddPanel}
             />
           ))}
         </div>
@@ -344,10 +406,17 @@ export function BoardPage() {
         <DragOverlay>{activePanel ? <PanelOverlay panel={activePanel} /> : null}</DragOverlay>
       </DndContext>
 
-      {myPendingMoves.length > 0 && (
+      {myPendingActions.length > 0 && (
         <div className="confirm-bar-stack">
           <div className="confirm-bar">
             <span>操作を確定しますか?</span>
+            <input
+              type="text"
+              className="confirm-bar-comment"
+              placeholder="コメント(任意)"
+              value={confirmComment}
+              onChange={(e) => setConfirmComment(e.target.value)}
+            />
             <button type="button" className="confirm-bar-confirm" onClick={handleConfirmAll}>
               確定
             </button>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { HocuspocusProvider } from '@hocuspocus/provider';
-import type { AwarenessState, AwarenessUser, PendingMove } from '@realtimeapp/shared';
+import type { AwarenessState, AwarenessUser, PendingAction } from '@realtimeapp/shared';
 
 // panelId -> 現在その panel をドラッグ中(編集中)のユーザー
 export function useDraggingUsers(provider: HocuspocusProvider | null): Map<string, AwarenessUser> {
@@ -31,25 +31,25 @@ export function useDraggingUsers(provider: HocuspocusProvider | null): Map<strin
   return dragging;
 }
 
-export interface PendingMoveEntry {
+export interface PendingActionEntry {
   user: AwarenessUser;
-  move: PendingMove;
+  action: PendingAction;
 }
 
 // ドロップ後・確定前の「操作中」状態を、全ユーザー分(自分自身も含む)まとめて取得する
-export function usePendingMoves(provider: HocuspocusProvider | null): PendingMoveEntry[] {
-  const [entries, setEntries] = useState<PendingMoveEntry[]>([]);
+export function usePendingActions(provider: HocuspocusProvider | null): PendingActionEntry[] {
+  const [entries, setEntries] = useState<PendingActionEntry[]>([]);
 
   useEffect(() => {
     if (!provider) return;
 
     const update = () => {
-      const next: PendingMoveEntry[] = [];
+      const next: PendingActionEntry[] = [];
       provider.awareness?.getStates().forEach((state) => {
         const awareness = state as Partial<AwarenessState>;
-        if (awareness.pendingMoves && awareness.user) {
-          for (const move of awareness.pendingMoves) {
-            next.push({ user: awareness.user, move });
+        if (awareness.pendingActions && awareness.user) {
+          for (const action of awareness.pendingActions) {
+            next.push({ user: awareness.user, action });
           }
         }
       });

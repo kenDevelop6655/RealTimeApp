@@ -6,10 +6,11 @@ interface Props {
   panel: PanelDto;
   editingUser?: AwarenessUser;
   disabled?: boolean;
+  pending?: boolean;
   onDelete: (panel: PanelDto) => void;
 }
 
-export function Panel({ panel, editingUser, disabled, onDelete }: Props) {
+export function Panel({ panel, editingUser, disabled, pending, onDelete }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: panel.id,
     disabled,
@@ -27,7 +28,7 @@ export function Panel({ panel, editingUser, disabled, onDelete }: Props) {
     <div
       ref={setNodeRef}
       style={style}
-      className="panel"
+      className={`panel${pending ? ' is-pending' : ''}`}
       {...attributes}
       {...(disabled ? {} : listeners)}
     >

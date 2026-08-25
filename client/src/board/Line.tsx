@@ -17,11 +17,22 @@ interface Props {
   draggingUsers: Map<string, AwarenessUser>;
   operating?: OperatingBadge;
   dragLocked: boolean;
+  pendingPanelIds: Set<string>;
   onDelete: (panel: PanelDto) => void;
   onAdd: (line: LineDto, name: string) => void;
 }
 
-export function Line({ line, panelIds, panelsById, draggingUsers, operating, dragLocked, onDelete, onAdd }: Props) {
+export function Line({
+  line,
+  panelIds,
+  panelsById,
+  draggingUsers,
+  operating,
+  dragLocked,
+  pendingPanelIds,
+  onDelete,
+  onAdd,
+}: Props) {
   const { setNodeRef } = useDroppable({ id: line.id, disabled: dragLocked });
   const [newName, setNewName] = useState('');
 
@@ -60,12 +71,14 @@ export function Line({ line, panelIds, panelsById, draggingUsers, operating, dra
           {panelIds.map((id) => {
             const panel = panelsById.get(id);
             if (!panel) return null;
+            const isPending = pendingPanelIds.has(id);
             return (
               <Panel
                 key={id}
                 panel={panel}
                 editingUser={draggingUsers.get(id)}
-                disabled={dragLocked}
+                disabled={dragLocked || isPending}
+                pending={isPending}
                 onDelete={onDelete}
               />
             );

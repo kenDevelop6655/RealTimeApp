@@ -50,6 +50,7 @@ export interface CreateHistoryRequest {
   toLineId?: string | null;
   fromIndex?: number | null;
   toIndex?: number | null;
+  confirmationId?: string | null;
 }
 
 export interface HistoryEntryDto {
@@ -64,6 +65,20 @@ export interface HistoryEntryDto {
   fromIndex: number | null;
   toIndex: number | null;
   createdAt: string;
+  confirmationId: string | null;
+}
+
+// 複数のmove操作をまとめて確定した1回分の操作を表す
+export interface HistoryConfirmationDto {
+  id: string;
+  confirmedById: string;
+  confirmedByName: string;
+  confirmedAt: string;
+  comment: string | null;
+}
+
+export interface CreateHistoryConfirmationRequest {
+  comment?: string | null;
 }
 
 export interface AwarenessUser {
@@ -73,7 +88,8 @@ export interface AwarenessUser {
 }
 
 // ドロップ後・確定前の「操作中」状態。Y.Docは変更せずAwarenessのみで共有する
-export interface PendingMove {
+export interface PendingMoveAction {
+  kind: 'move';
   panelId: string;
   fromLineId: string;
   toLineId: string;
@@ -81,10 +97,28 @@ export interface PendingMove {
   toLineOrder: string[];
 }
 
+// 追加ボタンを押した時点・確定前の「操作中」状態。Y.Docにはまだパネルを作成しない
+export interface PendingAddAction {
+  kind: 'add';
+  panelId: string;
+  lineId: string;
+  panelName: string;
+}
+
+// 削除ボタンを押した時点・確定前の「操作中」状態。Y.Docからはまだパネルを削除しない
+export interface PendingRemoveAction {
+  kind: 'remove';
+  panelId: string;
+  lineId: string;
+  panelName: string;
+}
+
+export type PendingAction = PendingMoveAction | PendingAddAction | PendingRemoveAction;
+
 export interface AwarenessState {
   user: AwarenessUser;
   draggingPanelId?: string | null;
-  pendingMoves?: PendingMove[];
+  pendingActions?: PendingAction[];
 }
 
 // 単一の共有スペース(ボード概念なし)を表す固定のYjsドキュメント名

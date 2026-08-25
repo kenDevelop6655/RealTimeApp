@@ -221,6 +221,12 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
+.panel.is-pending {
+  opacity: 0.55;
+  border-style: dashed;
+  border-color: #9ca3af;
+}
+
 .panel-name {
   font-size: 14px;
   font-weight: 500;
@@ -278,6 +284,16 @@ body {
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   font-size: 14px;
+}
+
+.confirm-bar-comment {
+  padding: 6px 10px;
+  border: 1px solid #4b5563;
+  border-radius: 4px;
+  background: #2a2a2a;
+  color: white;
+  font-size: 14px;
+  width: 220px;
 }
 
 .confirm-bar button {

@@ -158,7 +158,7 @@ MVP実装(`packages/shared`, `server`, `client`)にあたり確定した詳細�
 - **Yjsドキュメント名/WebSocketパス**: ドキュメント名は固定文字列`realtimeapp-space`(`YJS_DOCUMENT_NAME`、`packages/shared`で定義)。WebSocketは`/collaboration`パスのみ受け付け、ExpressのREST APIと同一HTTPサーバー・同一Node.jsプロセスで待ち受ける(`server/src/index.ts`)
 - **認証連携**: HocuspocusProviderのコンストラクタに渡す`token`(JWT)を`onAuthenticate`フックで検証し、`documentName`が`YJS_DOCUMENT_NAME`と一致しない接続は拒否する
 - **永続化のデバウンス**: Hocuspocus `Server.configure({ debounce: 2000, maxDebounce: 10000 })`により、確定操作から2秒後(最大10秒後)にスナップショットをPostgreSQLへ保存
-- **Awareness状態の形**: `{ user: {id, name, color}, draggingPanelId: string | null, pendingMoves: PendingMove[] }`。`color`はuserIdから決定的に導出(サーバー同期不要)。ドラッグ開始時に`draggingPanelId`をセットし、ドロップ確定 or キャンセルで`null`に戻す。ドラッグ中のライブ位置(index)はAwarenessでは共有しない(Y.Docは確定時のみ更新のため、他ユーザー画面では「誰がどのパネルを編集中か」のバッジ表示のみ行う)。`pendingMoves`はドロップ後・確定前の「操作中」の移動を配列で保持し、ユーザー1人につき複数件同時に持てる(後述)
+- **Awareness状態の形**: `{ user: {id, name, color}, draggingPanelId: string | null, pendingActions: PendingAction[] }`。`color`はuserIdから決定的に導出(サーバー同期不要)。ドラッグ開始時に`draggingPanelId`をセットし、ドロップ確定 or キャンセルで`null`に戻す。ドラッグ中のライブ位置(index)はAwarenessでは共有しない(Y.Docは確定時のみ更新のため、他ユーザー画面では「誰がどのパネルを編集中か」のバッジ表示のみ行う)。`pendingActions`はドロップ後・確定前の「操作中」の移動、および追加ボタン/削除ボタン押下後・確定前の追加・削除を種別(`kind: 'move' | 'add' | 'remove'`)付きの配列で保持し、ユーザー1人につき複数件同時に持てる(後述)。`kind: 'add'`のエントリはY.Docにまだ存在しない仮のpanelIdを持ち、他ユーザーの画面にも「確定待ち」のプレビューパネルとして薄く表示される
 - **REST APIの認証**: `POST /history`・`GET /history`はともに`Authorization: Bearer <JWT>`必須
 - **パスワードハッシュ**: Windows開発環境でのネイティブビルド依存を避けるため`bcrypt`ではなく`bcryptjs`を使用
 - **サーバーのビルド**: `packages/shared`はビルドせずTSソースを`main`/`types`として直接参照するため、`server`は`tsc`でのdist生成をせず`tsx`で直接実行する(`npm run dev`/`npm run start`)。型チェックのみ`npm run typecheck --workspace=server`
@@ -178,7 +178,14 @@ MVP実装(`packages/shared`, `server`, `client`)にあたり確定した詳細�
 - 1人のユーザーが同時に複数の未確定操作を抱えられる(それぞれ別パネルであれば)。**同一パネル**について確定前に再度ドラッグ&ドロップした場合は、新しい未確定操作として積み上がるのではなく、既存の未確定操作を置き換える(常にパネルごとに最大1件)。動かした結果が直近の確定済み状態と一致する(元の位置に戻した)場合は、未確定操作自体が自動的に解消される
 - **確定モーダルは常に1つ**: 未確定操作が何件あっても(=「操作中」ラインがいくつあっても)、画面下部に表示される確定バー/モーダルは常に1つだけで、「操作を確定しますか?」というメッセージも1回しか出ない。「確定」を押すとその時点の未確定操作をすべてまとめて確定し(履歴にはパネルごとに1件ずつ、合計で未確定操作の件数分記録される)、「キャンセル」を押すとすべての未確定操作をまとめて破棄する(個別の操作ごとの確定/キャンセルはできない)
 
-### 11.2 ページング
+### 11.2 追加・削除の確定フロー統合(実装済み)
+
+- パネルの追加・削除も、moveと同じ「操作中→確定バーでまとめて確定」フローに統合されている。追加・削除ボタンを押した時点ではY.Docは変更されず、Awarenessの`pendingActions`に`kind: 'add' | 'remove'`のエントリが積まれるだけで、対象ラインが「操作中」ロックされる
+- 確定ボタンを押した時点で、その時点の`pendingActions`(move/add/remove混在可)をまとめて処理する: 1件のHistoryConfirmationを作成し、各エントリごとにY.Docへ反映(パネル作成/削除/lineId・order更新)しつつHistoryを1件ずつ記録する。追加パネルの`panelId`は追加ボタン押下時点で採番し、確定時にそのIDでY.Docへ書き込む(プレビューと確定後の実データでIDが一致する)
+- キャンセルボタンを押すと`pendingActions`をすべて破棄し、Y.Doc・履歴のどちらも変更しない(追加操作もこの時点でプレビューごと消える)
+- `HistoryConfirmation`テーブル名はadd/remove/move全種別の確定を汎用的に表す名称として妥当と判断し、変更しなかった
+
+### 11.3 ページング
 
 - ライン一覧は10ラインごとにページングして表示する
 - パネルに対する操作(追加・削除・D&D)は表示中のページ単位で行う(ページをまたいだパネル移動の扱いは未定・要検討)

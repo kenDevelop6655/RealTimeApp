@@ -8,13 +8,14 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(uuid())
-  name         String
-  email        String    @unique
-  passwordHash String
-  avatarUrl    String?
-  createdAt    DateTime  @default(now())
-  histories    History[]
+  id                   String                @id @default(uuid())
+  name                 String
+  email                String                @unique
+  passwordHash         String
+  avatarUrl            String?
+  createdAt            DateTime              @default(now())
+  histories            History[]
+  historyConfirmations HistoryConfirmation[]
 }
 
 // 単一の共有スペース(Y.Doc)のバイナリスナップショット。行は常に1件のみ運用する。
@@ -24,19 +25,37 @@ model DocSnapshot {
   updatedAt DateTime @updatedAt
 }
 
+// パネル1件ごとの変更操作(add/remove/move)を1行ずつ記録する
 model History {
-  id         String     @id @default(uuid())
-  userId     String
-  user       User       @relation(fields: [userId], references: [id])
-  panelId    String
-  panelName  String
-  action     String
-  fromLineId String?
-  toLineId   String?
-  fromIndex  Int?
-  toIndex    Int?
-  createdAt  DateTime   @default(now())
+  id             String               @id @default(uuid())
+  userId         String
+  user           User                 @relation(fields: [userId], references: [id])
+  panelId        String
+  panelName      String
+  action         String
+  fromLineId     String?
+  toLineId       String?
+  fromIndex      Int?
+  toIndex        Int?
+  createdAt      DateTime             @default(now())
+  // 複数のmove操作を一度に確定した場合、同じ確定操作に属する行をまとめて追跡できるようにする
+  confirmationId String?
+  confirmation   HistoryConfirmation? @relation(fields: [confirmationId], references: [id])
 
   @@index([createdAt])
   @@index([panelId])
+  @@index([confirmationId])
+}
+
+// 「確定」操作1回分をまとめて表す。確定した日時・確定したユーザーを持ち、
+// その確定によって作成されたHistory行と1対多で紐づく
+model HistoryConfirmation {
+  id            String    @id @default(uuid())
+  confirmedById String
+  confirmedBy   User      @relation(fields: [confirmedById], references: [id])
+  confirmedAt   DateTime  @default(now())
+  comment       String?
+  entries       History[]
+
+  @@index([confirmedAt])
 }
